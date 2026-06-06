@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+#
+# deepclaude — run Claude Code against DeepSeek's Anthropic-compatible API.
+#
+# First run prompts for your DeepSeek API key and stores it (once).
+# Every run after that loads the key, sets the env vars, and launches claude.
+#
+set -euo pipefail
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/deepclaude"
+CONFIG_FILE="$CONFIG_DIR/config"
+
+prompt_for_key() {
+  echo "Enter your DeepSeek API key (input hidden)." >&2
+  echo "Get one at https://platform.deepseek.com/api_keys" >&2
+  printf "DeepSeek API key: " >&2
+  local key=""
+  read -rs key
+  echo >&2
+  if [ -z "$key" ]; then
+    echo "No key entered. Aborting." >&2
+    exit 1
+  fi
+  mkdir -p "$CONFIG_DIR"
+  ( umask 077; printf 'DEEPSEEK_API_KEY=%s\n' "$key" > "$CONFIG_FILE" )
+  chmod 600 "$CONFIG_FILE"
+  echo "Saved to $CONFIG_FILE" >&2
+}
+
+read_key() {
+  sed -n 's/^DEEPSEEK_API_KEY=//p' "$CONFIG_FILE" 2>/dev/null | head -n1
+}
+
+# Subcommands for managing the stored key.
+case "${1:-}" in
+  config|--config|set-key|--set-key)
+    prompt_for_key
+    echo "Key updated. Run 'deepclaude' to start." >&2
+    exit 0
+    ;;
+  reset|--reset)
+    rm -f "$CONFIG_FILE"
+    echo "Stored key removed." >&2
+    exit 0
+    ;;
+esac
+
+# Ensure a key exists; prompt on first run.
+DEEPSEEK_API_KEY="$(read_key)"
+if [ -z "${DEEPSEEK_API_KEY:-}" ]; then
+  prompt_for_key
+  DEEPSEEK_API_KEY="$(read_key)"
+fi
+
+if ! command -v claude >/dev/null 2>&1; then
+  echo "claude CLI not found on PATH." >&2
+  echo "Install Claude Code first: https://docs.claude.com/en/docs/claude-code" >&2
+  exit 127
+fi
+
+export ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic"
+export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
+export ANTHROPIC_MODEL="deepseek-v4-pro[1m]"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="deepseek-v4-pro[1m]"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="deepseek-v4-pro[1m]"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="deepseek-v4-flash"
+export CLAUDE_CODE_SUBAGENT_MODEL="deepseek-v4-flash"
+export CLAUDE_CODE_EFFORT_LEVEL="max"
+
+exec claude --dangerously-skip-permissions "$@"
