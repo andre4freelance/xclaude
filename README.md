@@ -160,6 +160,7 @@ The key is resolved in this order:
 <name>claude set-effort <LEVEL>  # pin effort, or 'off' to control it in-session
 <name>claude set-context <MODE>  # context window: 1m | default | auto
 <name>claude set-permissions <MODE>  # ask (prompt first) | skip (no prompts)
+<name>claude check [MODEL]       # live-test the endpoint/key/model
 <name>claude reset               # delete the stored config (keep the command)
 <name>claude uninstall           # remove the config AND the command itself
 ```
@@ -183,6 +184,29 @@ production work. If you want the fast, no-prompt flow instead:
 
 > Only `skip` disables the prompts; anything else (including a brand-new
 > install) keeps them on. Use `skip` only in a directory/endpoint you trust.
+
+### Checking a provider works
+
+Setup **verifies before it saves**: after you enter the URL, model, and key, the
+wrapper makes a real 1-token call to the provider's `/v1/messages` endpoint — the
+exact path Claude Code uses. Only if that succeeds does it write the config (if
+it fails you see why, and can choose to save anyway). So a wrong URL, key, or
+model is caught right away instead of at first launch.
+
+You can re-run the same test any time:
+
+```bash
+<name>claude check                 # test the stored endpoint/key/model
+<name>claude check MiniMax-M2.7-highspeed   # test a specific model before switching to it
+```
+
+It sends the request the way the wrapper will at runtime (`Authorization:
+Bearer <key>`, the Anthropic Messages format), so a pass means the real launch
+will authenticate and the model will answer. Typical verdicts:
+
+- **auth rejected (401/403)** — wrong API key.
+- **endpoint not found (404)** — base URL wrong (remember: no trailing `/v1`).
+- **model rejected (400/404)** — the model id isn't valid for this key.
 
 ### Context window (1M vs 200K)
 

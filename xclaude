@@ -116,6 +116,47 @@ auto_set_context() {
   fi
 }
 
+# Verify a provider works by doing a real 1-token Anthropic Messages API call —
+# the exact path Claude Code uses. Proves in one shot that: the endpoint speaks
+# the Anthropic protocol, the key is valid, and the model actually answers.
+# Prints a verdict; returns 0 only on success.
+run_check() {
+  local base="$1" key="$2" model="$3" bare code body tmp
+  bare="${model%\[1m\]}"                 # send the plain id, like Claude Code does
+  tmp="$(mktemp)"
+  # Send exactly what the wrapper's runtime sends (ANTHROPIC_AUTH_TOKEN -> a
+  # Bearer header), so a pass here means the real launch will authenticate too.
+  code="$(curl -sS -m 30 -o "$tmp" -w '%{http_code}' -X POST "${base%/}/v1/messages" \
+      -H "authorization: Bearer $key" \
+      -H "anthropic-version: 2023-06-01" -H "content-type: application/json" \
+      -d "{\"model\":\"$bare\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}" \
+      2>/dev/null || printf '000')"
+  body="$(head -c 400 "$tmp" 2>/dev/null)"; rm -f "$tmp"
+  if [ "$code" = 200 ]; then
+    say "✓ OK — endpoint speaks the Anthropic API, key works, and '$bare' responded."
+    return 0
+  fi
+  case "$code" in
+    401|403)
+      say "✗ auth rejected (HTTP $code) — check the API key." ;;
+    000|"")
+      say "✗ couldn't reach ${base} — network error or bad host." ;;
+    *)
+      # A model problem can come back as 400 or 404 depending on the provider.
+      if printf '%s' "$body" | grep -qiE 'model_not_found|invalid model|unknown model|no such model|model.*not.*(found|exist)'; then
+        say "✗ model '$bare' rejected (HTTP $code) — check the model id."
+        say "  Tip: '$SELF check <other-model>' to try another one."
+      elif [ "$code" = 404 ]; then
+        say "✗ endpoint not found (HTTP 404) — the base URL is likely wrong."
+        say "  It must NOT end in /v1 (Claude Code appends /v1/messages itself)."
+      else
+        say "✗ HTTP $code from the endpoint."
+        [ -n "$body" ] && say "  response: $body"
+      fi ;;
+  esac
+  return 1
+}
+
 # --- config file I/O --------------------------------------------------------
 
 read_field() {
@@ -260,10 +301,27 @@ interactive_setup() {
     done
   fi
 
-  save_config "$key" "$url" "$model_main" "$model_haiku"
-  # By default, take the context window from the provider (not Claude Code's
-  # 200K assumption). Best-effort; leaves the default if it can't be detected.
-  auto_set_context
+  # Preflight: verify the endpoint + key + model actually work BEFORE saving,
+  # so a wrong URL/key/model is caught here instead of at first launch.
+  say ""
+  say "Verifying the endpoint, key, and model..."
+  if run_check "$url" "$key" "$model_main"; then
+    save_config "$key" "$url" "$model_main" "$model_haiku"
+    # Take the context window from the provider, not Claude Code's 200K guess.
+    auto_set_context
+  else
+    say ""
+    local ans
+    ans="$(read_visible 'Save this config anyway? [y/N]' '')"
+    case "$ans" in
+      y|Y|yes|Yes|YES)
+        save_config "$key" "$url" "$model_main" "$model_haiku"
+        auto_set_context ;;
+      *)
+        say "Not saved. Fix the details and run '$SELF config' again."
+        exit 1 ;;
+    esac
+  fi
   say ""
 }
 
@@ -278,6 +336,7 @@ print_help() {
   say "                               or 'off' to let in-session /effort control it"
   say "  $SELF set-context [MODE]     context window: 1m | default | auto"
   say "  $SELF set-permissions [MODE] ask (prompt before tools) | skip (no prompts)"
+  say "  $SELF check [MODEL]          test the endpoint/key/model with a live ping"
   say "  $SELF reset                  delete the stored config"
   say "  $SELF uninstall              remove the config AND this command"
   say "  $SELF update                 self-update to the latest version"
@@ -288,6 +347,22 @@ case "${1:-}" in
   help|--help|-h)
     print_help
     exit 0
+    ;;
+  check|--check|test|--test|doctor|--doctor|verify|--verify)
+    if [ ! -f "$CONFIG_FILE" ]; then
+      say "No config yet — run '$SELF config' first."
+      exit 1
+    fi
+    CHK_BASE="$(read_field BASE_URL)"
+    CHK_KEY="$(read_field KEY)"
+    CHK_MODEL="$(trim "${2:-$(read_field MODEL_MAIN)}")"
+    if [ -z "$CHK_BASE" ] || [ -z "$CHK_KEY" ] || [ -z "$CHK_MODEL" ]; then
+      say "Missing base URL, key, or model — run '$SELF config'."
+      exit 1
+    fi
+    say "Checking $CHK_BASE with model '$CHK_MODEL' ..."
+    run_check "$CHK_BASE" "$CHK_KEY" "$CHK_MODEL"
+    exit $?
     ;;
   config|--config|set-key|--set-key|change|--change|change-key|--change-key)
     if [ -n "${2:-}" ]; then

@@ -88,6 +88,43 @@ function Set-AutoContext {
   }
 }
 
+# Verify a provider works with a real 1-token Anthropic Messages call — the
+# exact path Claude Code uses. Returns $true only on success.
+function Test-Provider([string]$Base, [string]$Key, [string]$Model) {
+  $bare = if ($Model.EndsWith('[1m]')) { $Model.Substring(0, $Model.Length - 4) } else { $Model }
+  $url = ($Base.TrimEnd('/')) + '/v1/messages'
+  # Match the wrapper's runtime auth (ANTHROPIC_AUTH_TOKEN -> Bearer) exactly.
+  $headers = @{ 'authorization' = "Bearer $Key"; 'anthropic-version' = '2023-06-01' }
+  $body = @{ model = $bare; max_tokens = 1; messages = @(@{ role = 'user'; content = 'ping' }) } | ConvertTo-Json -Depth 5
+  try {
+    $resp = Invoke-WebRequest -UseBasicParsing -Uri $url -Method Post -Headers $headers -ContentType 'application/json' -Body $body -TimeoutSec 30
+    if ($resp.StatusCode -eq 200) {
+      Write-Host "OK - endpoint speaks the Anthropic API, key works, and '$bare' responded."
+      return $true
+    }
+  } catch {
+    $code = 0; $respBody = ''
+    if ($_.Exception.Response) {
+      try { $code = [int]$_.Exception.Response.StatusCode } catch { }
+      try { $r = New-Object IO.StreamReader($_.Exception.Response.GetResponseStream()); $respBody = $r.ReadToEnd() } catch { }
+    }
+    if ($code -in @(401, 403)) {
+      Write-Host "FAIL: auth rejected (HTTP $code) - check the API key."
+    } elseif ($respBody -match '(?i)model_not_found|invalid model|unknown model|no such model') {
+      Write-Host "FAIL: model '$bare' rejected (HTTP $code) - check the model id."
+    } elseif ($code -eq 404) {
+      Write-Host 'FAIL: endpoint not found (HTTP 404) - base URL likely wrong (must NOT end in /v1).'
+    } elseif ($code -eq 0) {
+      Write-Host "FAIL: couldn't reach $Base - network error or bad host."
+    } else {
+      Write-Host "FAIL: HTTP $code from the endpoint."
+      if ($respBody) { Write-Host ("  response: " + $respBody.Substring(0, [Math]::Min(400, $respBody.Length))) }
+    }
+    return $false
+  }
+  return $false
+}
+
 function Save-Config([string]$Key, [string]$Url, [string]$Main, [string]$Haiku, [string]$Effort = $null, [string]$Context = $null, [string]$Perms = $null) {
   New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
   # $null means "preserve whatever is stored"; '' means clear it.
@@ -179,9 +216,23 @@ function Invoke-Setup([string]$PresetKey) {
     }
   }
 
-  Save-Config $key $url $main $haiku
-  # By default, take the context window from the provider (best-effort).
-  Set-AutoContext
+  # Preflight: verify endpoint + key + model work BEFORE saving.
+  Write-Host ''
+  Write-Host 'Verifying the endpoint, key, and model...'
+  if (Test-Provider $url $key $main) {
+    Save-Config $key $url $main $haiku
+    Set-AutoContext
+  } else {
+    Write-Host ''
+    $ans = Read-Host 'Save this config anyway? [y/N]'
+    if ($ans -match '^(y|yes)$') {
+      Save-Config $key $url $main $haiku
+      Set-AutoContext
+    } else {
+      Write-Host "Not saved. Fix the details and run '$Self config' again."
+      exit 1
+    }
+  }
   Write-Host ''
 }
 
@@ -196,6 +247,7 @@ function Print-Help {
   Write-Host "                                 or 'off' to let /effort control it"
   Write-Host "  $Self set-context [MODE]       context window: 1m | default | auto"
   Write-Host "  $Self set-permissions [MODE]   ask (prompt before tools) | skip (no prompts)"
+  Write-Host "  $Self check [MODEL]            test the endpoint/key/model with a live ping"
   Write-Host "  $Self reset                    delete the stored config"
   Write-Host "  $Self uninstall                remove the config AND this command"
   Write-Host "  $Self update                   self-update to the latest version"
@@ -207,6 +259,20 @@ if ($args.Count -ge 1) {
     '^(help|--help|-h)$' {
       Print-Help
       exit 0
+    }
+    '^(check|--check|test|--test|doctor|--doctor|verify|--verify)$' {
+      if (-not (Test-Path $ConfigFile)) {
+        Write-Host "No config yet - run '$Self config' first."
+        exit 1
+      }
+      $cBase = Get-Field 'BASE_URL'; $cKey = Get-Field 'KEY'
+      $cModel = if ($args.Count -ge 2) { "$($args[1])".Trim() } else { Get-Field 'MODEL_MAIN' }
+      if (-not $cBase -or -not $cKey -or -not $cModel) {
+        Write-Host "Missing base URL, key, or model - run '$Self config'."
+        exit 1
+      }
+      Write-Host "Checking $cBase with model '$cModel' ..."
+      if (Test-Provider $cBase $cKey $cModel) { exit 0 } else { exit 1 }
     }
     '^(config|--config|set-key|--set-key|change|--change|change-key|--change-key)$' {
       if ($args.Count -ge 2) {
