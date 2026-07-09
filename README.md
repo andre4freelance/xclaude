@@ -1,30 +1,47 @@
 # xclaude
 
 Run [Claude Code](https://docs.claude.com/en/docs/claude-code) against **any**
-Anthropic-compatible AI API — DeepSeek, GLM (Z.AI), or a custom/unofficial
-endpoint of your own.
+Anthropic-compatible AI API — pointed at **any endpoint**, using **any model**.
 
-Install once per provider, enter that provider's API key once, and from then
-on just run the command it gave you — it sets all the env vars and launches
-`claude` for you.
+`deepseek` and `glm` are just built-in *presets* (they pre-fill the URL and
+model so you can hit Enter). They are **not** the only options. You can point
+this at:
+
+- any provider's official Anthropic-compatible endpoint;
+- a self-hosted or unofficial mirror / reseller;
+- a multi-model **aggregator / gateway** — one endpoint that serves dozens of
+  models (e.g. SumoPod, OpenRouter). Pick GLM, MiniMax, Mimo, Kimi, Qwen,
+  DeepSeek, … from the same command — see
+  [Aggregators](#aggregators-one-endpoint-many-models).
+
+Install once, enter the API key once, and from then on just run the command it
+gave you — it sets all the env vars and launches `claude` for you.
 
 > Requires the `claude` CLI to already be installed
 > ([instructions](https://docs.claude.com/en/docs/claude-code)).
 
 ## How naming works
 
-The installer asks which provider you're setting up and names the command
-`<provider>claude`:
+The installer asks for a **name** and calls the command `<name>claude`. The
+name is completely free-form — type whatever you like; it only affects the
+command name and where the config is stored:
 
-| You type    | Command you get |
-| ----------- | ---------------- |
-| `deepseek`  | `deepseekclaude`  |
-| `glm`       | `glmclaude`       |
-| `mycompany` | `mycompanyclaude` |
+| You type    | Command you get   | Notes                                  |
+| ----------- | ----------------- | -------------------------------------- |
+| `deepseek`  | `deepseekclaude`  | preset: URL + models pre-filled        |
+| `glm`       | `glmclaude`       | preset: URL + models pre-filled        |
+| `sumopod`   | `sumopodclaude`   | anything else: you enter URL + model   |
+| `mimo`      | `mimoclaude`      | name it after the model if you prefer  |
 
-You can install as many providers as you like, side by side — each gets its
-own command and its own stored config, so `deepseekclaude` and `glmclaude`
-never interfere with each other.
+Only `deepseek` and `glm` have pre-filled defaults; every other name simply
+prompts you for the URL and model. Nothing about the name limits which
+provider or model you can use.
+
+You can install as many as you like, side by side — each gets its own command
+and its own stored config, so they never interfere with each other. Tip: if
+one endpoint serves many models (an aggregator), name the command after the
+**provider** (e.g. `sumopod`) and switch models inside it, rather than making
+one command per model — see [Aggregators](#aggregators-one-endpoint-many-models).
 
 ## Install (one command)
 
@@ -82,11 +99,46 @@ glmclaude --help
 
 ### Known presets vs. custom / unofficial sources
 
-If the provider name is a known preset (`deepseek`, `glm`), the base URL and
-model names are pre-filled — press Enter to accept them, or type your own to
-override (e.g. a self-hosted mirror, a reseller, or any endpoint that isn't
-the provider's official one). Unknown provider names just start with empty
-fields, so nothing is assumed for you.
+If the name is a known preset (`deepseek`, `glm`), the base URL and model names
+are pre-filled — press Enter to accept them, or type your own to override (a
+self-hosted mirror, a reseller, an aggregator, any endpoint at all). Any other
+name starts with empty fields and simply asks you for the URL and model, so
+**you can use any provider and any model** — the presets are only there to save
+typing for two common ones.
+
+> **Base URL tip:** enter the endpoint **without** a trailing `/v1`. Claude Code
+> speaks the Anthropic Messages API and appends `/v1/messages` itself, so a base
+> of `https://host/v1` becomes `https://host/v1/v1/messages` → 404. Use
+> `https://host` (the wrapper's `set-url` is the quick fix if you hit this).
+
+### Aggregators: one endpoint, many models
+
+Some providers are **aggregators / gateways** — a single Anthropic-compatible
+endpoint (and one API key) that serves dozens of models. You do **not** install
+one command per model. Install **one** command named after the aggregator, then
+switch models freely.
+
+Example — [SumoPod](https://ai.sumopod.com) (GLM, MiniMax, Mimo, Kimi, Qwen,
+DeepSeek, GPT, Claude, …):
+
+```bash
+# 1. install one command for the aggregator
+curl -fsSL https://cdn.jsdelivr.net/gh/andre4freelance/xclaude@main/install.sh | bash -s -- sumopod
+
+# 2. first run: base URL = https://ai.sumopod.com  (no /v1), model = any id it
+#    serves, key = your SumoPod key
+sumopodclaude
+
+# 3. switch the default model any time — no reinstall
+sumopodclaude set-model mimo-v2.5-pro
+sumopodclaude set-model MiniMax-M2.7-highspeed
+sumopodclaude set-context auto        # match the new model's context window
+```
+
+You can also switch **per session, live**, with Claude Code's own `/model`
+command — e.g. type `/model mimo-v2.5-pro` inside a running session (add `[1m]`
+to the id if that model supports a 1M window). The wrapper only sets the
+*default*; `/model` overrides it for any model the endpoint accepts.
 
 ### Ways to provide the key
 
