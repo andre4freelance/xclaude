@@ -159,13 +159,31 @@ The key is resolved in this order:
 <name>claude set-model <MAIN> [HAIKU]   # change the model name(s)
 <name>claude set-effort <LEVEL>  # pin effort, or 'off' to control it in-session
 <name>claude set-context <MODE>  # context window: 1m | default | auto
-<name>claude reset               # delete everything stored for this provider
+<name>claude set-permissions <MODE>  # ask (prompt first) | skip (no prompts)
+<name>claude reset               # delete the stored config (keep the command)
+<name>claude uninstall           # remove the config AND the command itself
 ```
 
 `change-key`/`change`/`set-key` are accepted as aliases for `config`;
 `change-url`/`url` for `set-url`; `change-model`/`model` for `set-model`;
 `change-effort`/`effort` for `set-effort`; `change-context`/`context` for
-`set-context`.
+`set-context`; `permissions`/`perms` for `set-permissions`; `remove` for
+`uninstall`.
+
+### Permission prompts (ask vs skip)
+
+By default the wrapper launches `claude --dangerously-skip-permissions`, so
+Claude runs tools (edits, shell commands, API calls) **without asking**. That's
+convenient, but for sensitive work — production systems, anything you want to
+review first — you'll want prompts back:
+
+```bash
+<name>claude set-permissions ask   # Claude asks before each tool action
+<name>claude set-permissions skip  # back to no-prompt (default)
+```
+
+> Use `ask` when the endpoint is a third-party/aggregator model and you're
+> working on anything you can't afford to have changed without review.
 
 ### Context window (1M vs 200K)
 
@@ -224,13 +242,28 @@ CLAUDE_CODE_SUBAGENT_MODEL="<the configured haiku/cheap model>"
 # CLAUDE_CODE_EFFORT_LEVEL is set ONLY if you pinned one via set-effort
 ```
 
-Then runs: `claude --dangerously-skip-permissions "$@"`
+Then runs `claude "$@"` — with `--dangerously-skip-permissions` unless you ran
+`set-permissions ask`.
 
 > **Note:** `--dangerously-skip-permissions` lets Claude run tools without
 > per-action approval prompts. Convenient, but it means commands and file
-> edits execute without asking. Use it in a directory you trust.
+> edits execute without asking. Use it in a directory you trust, or switch it
+> off with `<name>claude set-permissions ask`.
 
 ## Uninstall
+
+The simplest way — removes both the stored config and the command itself:
+
+```bash
+<name>claude uninstall
+```
+
+Run it once per installed command (e.g. `glmclaude uninstall`,
+`sumopodclaude uninstall`). On Windows it removes the config and prints the one
+line to delete the install folder.
+
+<details>
+<summary>Or remove it by hand</summary>
 
 **macOS / Linux**
 
@@ -246,4 +279,7 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\<name>claude"
 Remove-Item -Recurse -Force "$env:APPDATA\<name>claude"
 ```
 
-Repeat per installed provider.
+</details>
+
+> `reset` only clears the saved config (URL/model/key) but keeps the command
+> installed; `uninstall` removes both.

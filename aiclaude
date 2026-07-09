@@ -112,12 +112,13 @@ read_field() {
 }
 
 save_config() {
-  local key url model_main model_haiku effort context
+  local key url model_main model_haiku effort context perms
   key="$(trim "$1")" url="$(trim "$2")" model_main="$(trim "$3")" model_haiku="$(trim "$4")"
-  # Trailing args set EFFORT ($5) and CONTEXT ($6); if omitted, preserve
-  # whatever is already stored (read before we truncate the file below).
+  # Trailing args set EFFORT ($5), CONTEXT ($6), PERMISSIONS ($7); if omitted,
+  # preserve what's stored (read before we truncate the file below).
   if [ "$#" -ge 5 ]; then effort="$(trim "$5")"; else effort="$(read_field EFFORT)"; fi
   if [ "$#" -ge 6 ]; then context="$(trim "$6")"; else context="$(read_field CONTEXT)"; fi
+  if [ "$#" -ge 7 ]; then perms="$(trim "$7")"; else perms="$(read_field PERMISSIONS)"; fi
   mkdir -p "$CONFIG_DIR"
   (
     umask 077
@@ -128,6 +129,7 @@ save_config() {
       printf 'MODEL_HAIKU=%s\n' "$model_haiku"
       printf 'EFFORT=%s\n' "$effort"
       printf 'CONTEXT=%s\n' "$context"
+      printf 'PERMISSIONS=%s\n' "$perms"
     } > "$CONFIG_FILE"
   )
   chmod 600 "$CONFIG_FILE"
@@ -254,7 +256,9 @@ print_help() {
   say "  $SELF set-effort [LEVEL]     pin effort (low|medium|high|xhigh|max),"
   say "                               or 'off' to let in-session /effort control it"
   say "  $SELF set-context [MODE]     context window: 1m | default | auto"
+  say "  $SELF set-permissions [MODE] ask (prompt before tools) | skip (no prompts)"
   say "  $SELF reset                  delete the stored config"
+  say "  $SELF uninstall              remove the config AND this command"
   say "  $SELF update                 self-update to the latest version"
 }
 
@@ -373,9 +377,38 @@ case "${1:-}" in
     fi
     exit 0
     ;;
+  set-permissions|--set-permissions|permissions|--permissions|perms|--perms)
+    if [ ! -f "$CONFIG_FILE" ]; then
+      say "No config yet — run '$SELF config' first."
+      exit 1
+    fi
+    WANT="$(printf '%s' "$(trim "${2:-}")" | tr '[:upper:]' '[:lower:]')"
+    case "$WANT" in
+      ask|prompt|safe|on) NEW_PERMS="ask" ;;
+      skip|yolo|bypass|off|"") NEW_PERMS="skip" ;;
+      *) say "Permissions must be: ask (prompt before actions) or skip (no prompts)."; exit 1 ;;
+    esac
+    save_config "$(read_field KEY)" "$(read_field BASE_URL)" "$(read_field MODEL_MAIN)" "$(read_field MODEL_HAIKU)" "$(read_field EFFORT)" "$(read_field CONTEXT)" "$NEW_PERMS"
+    if [ "$NEW_PERMS" = "ask" ]; then
+      say "Done. Claude will ask before running tools (no --dangerously-skip-permissions)."
+    else
+      say "Done. Claude runs tools without asking (--dangerously-skip-permissions)."
+    fi
+    exit 0
+    ;;
   reset|--reset)
     rm -f "$CONFIG_FILE"
     say "Stored config removed."
+    exit 0
+    ;;
+  uninstall|--uninstall|remove|--remove)
+    say "Removing $SELF (its config and the command itself)..."
+    rm -rf "$CONFIG_DIR"
+    if [ -n "$SELF_PATH" ] && [ -f "$SELF_PATH" ]; then
+      rm -f "$SELF_PATH" && say "Removed command: $SELF_PATH"
+    fi
+    say "Removed config: $CONFIG_DIR"
+    say "Done. '$SELF' is uninstalled."
     exit 0
     ;;
   update|--update|upgrade|--upgrade)
@@ -468,4 +501,10 @@ case "$EFFORT" in
   *) : ;;  # unset/off/auto: leave it to /effort and settings.json
 esac
 
-exec claude --dangerously-skip-permissions "$@"
+# Permissions: 'ask' runs claude normally (it prompts before tools); anything
+# else (default) keeps the original --dangerously-skip-permissions behavior.
+if [ "$(read_field PERMISSIONS)" = "ask" ]; then
+  exec claude "$@"
+else
+  exec claude --dangerously-skip-permissions "$@"
+fi

@@ -72,12 +72,13 @@ function Get-MaxInput([string]$Base, [string]$Key, [string]$Model) {
   return 0
 }
 
-function Save-Config([string]$Key, [string]$Url, [string]$Main, [string]$Haiku, [string]$Effort = $null, [string]$Context = $null) {
+function Save-Config([string]$Key, [string]$Url, [string]$Main, [string]$Haiku, [string]$Effort = $null, [string]$Context = $null, [string]$Perms = $null) {
   New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
   # $null means "preserve whatever is stored"; '' means clear it.
   if ($null -eq $Effort) { $Effort = Get-Field 'EFFORT' }
   if ($null -eq $Context) { $Context = Get-Field 'CONTEXT' }
-  $lines = @("KEY=$Key", "BASE_URL=$Url", "MODEL_MAIN=$Main", "MODEL_HAIKU=$Haiku", "EFFORT=$Effort", "CONTEXT=$Context")
+  if ($null -eq $Perms) { $Perms = Get-Field 'PERMISSIONS' }
+  $lines = @("KEY=$Key", "BASE_URL=$Url", "MODEL_MAIN=$Main", "MODEL_HAIKU=$Haiku", "EFFORT=$Effort", "CONTEXT=$Context", "PERMISSIONS=$Perms")
   Set-Content -Path $ConfigFile -Value $lines -Encoding ASCII
   try {
     $acl = New-Object System.Security.AccessControl.FileSecurity
@@ -176,7 +177,9 @@ function Print-Help {
   Write-Host "  $Self set-effort [LEVEL]       pin effort (low|medium|high|xhigh|max),"
   Write-Host "                                 or 'off' to let /effort control it"
   Write-Host "  $Self set-context [MODE]       context window: 1m | default | auto"
+  Write-Host "  $Self set-permissions [MODE]   ask (prompt before tools) | skip (no prompts)"
   Write-Host "  $Self reset                    delete the stored config"
+  Write-Host "  $Self uninstall                remove the config AND this command"
   Write-Host "  $Self update                   self-update to the latest version"
 }
 
@@ -288,9 +291,38 @@ if ($args.Count -ge 1) {
       }
       exit 0
     }
+    '^(set-permissions|--set-permissions|permissions|--permissions|perms|--perms)$' {
+      if (-not (Test-Path $ConfigFile)) {
+        Write-Host "No config yet - run '$Self config' first."
+        exit 1
+      }
+      $want = if ($args.Count -ge 2) { "$($args[1])".Trim().ToLower() } else { '' }
+      $newPerms = $null
+      switch ($want) {
+        { $_ -in @('ask','prompt','safe','on') } { $newPerms = 'ask' }
+        { $_ -in @('skip','yolo','bypass','off','') } { $newPerms = 'skip' }
+        default { Write-Host 'Permissions must be: ask (prompt before actions) or skip (no prompts).'; exit 1 }
+      }
+      Save-Config (Get-Field 'KEY') (Get-Field 'BASE_URL') (Get-Field 'MODEL_MAIN') (Get-Field 'MODEL_HAIKU') (Get-Field 'EFFORT') (Get-Field 'CONTEXT') $newPerms
+      if ($newPerms -eq 'ask') {
+        Write-Host 'Done. Claude will ask before running tools (no --dangerously-skip-permissions).'
+      } else {
+        Write-Host 'Done. Claude runs tools without asking (--dangerously-skip-permissions).'
+      }
+      exit 0
+    }
     '^(reset|--reset)$' {
       if (Test-Path $ConfigFile) { Remove-Item $ConfigFile -Force }
       Write-Host 'Stored config removed.'
+      exit 0
+    }
+    '^(uninstall|--uninstall|remove|--remove)$' {
+      Write-Host "Removing $Self (its config and the command itself)..."
+      if (Test-Path $ConfigDir) { Remove-Item $ConfigDir -Recurse -Force }
+      $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
+      Write-Host "Removed config: $ConfigDir"
+      Write-Host "To finish, delete the install folder: $dir"
+      Write-Host "  Remove-Item -Recurse -Force `"$dir`""
       exit 0
     }
     '^(update|--update|upgrade|--upgrade)$' {
@@ -374,5 +406,11 @@ if ($effort -in @('low','medium','high','xhigh','max')) {
   Remove-Item Env:\CLAUDE_CODE_EFFORT_LEVEL -ErrorAction SilentlyContinue
 }
 
-& claude --dangerously-skip-permissions @args
+# Permissions: 'ask' runs claude normally (prompts before tools); anything else
+# keeps the original --dangerously-skip-permissions behavior.
+if ((Get-Field 'PERMISSIONS') -eq 'ask') {
+  & claude @args
+} else {
+  & claude --dangerously-skip-permissions @args
+}
 exit $LASTEXITCODE
