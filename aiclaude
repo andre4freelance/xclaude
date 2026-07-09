@@ -1,0 +1,345 @@
+#!/usr/bin/env bash
+#
+# <provider>claude — run Claude Code against any Anthropic-compatible AI API.
+#
+# This file is provider-agnostic: which provider it talks to is derived
+# from its own installed filename. Installed as `deepseekclaude`, it talks
+# to DeepSeek; as `glmclaude`, GLM/Z.AI; as `foobarclaude`, whatever
+# custom/self-hosted endpoint you configure for it.
+#
+# Key resolution order:
+#   1. `<name>claude config [KEY]`  — set/replace the stored key (inline or prompt)
+#   2. stored config file            — set on a previous run
+#   3. <PROVIDER>_API_KEY env var    — used and saved for next time
+#   4. interactive prompt            — asks for key (and URL/model on first run)
+#
+set -euo pipefail
+
+SELF="$(basename "$0")"
+PROVIDER="${SELF%claude}"
+if [ -z "$PROVIDER" ] || [ "$PROVIDER" = "$SELF" ]; then
+  echo "This script must be installed/run as '<provider>claude' (e.g. deepseekclaude, glmclaude)." >&2
+  exit 1
+fi
+PROVIDER_UPPER="$(printf '%s' "$PROVIDER" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9' '_')"
+
+# Resolve our own path even when invoked via a bare PATH lookup (e.g. `glmclaude`
+# with no directory component), so `update` can overwrite the right file.
+SELF_PATH="$0"
+case "$SELF_PATH" in
+  */*) : ;;
+  *) SELF_PATH="$(command -v "$SELF_PATH" 2>/dev/null || printf '%s' "$SELF_PATH")" ;;
+esac
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/${SELF}"
+CONFIG_FILE="$CONFIG_DIR/config"
+
+REPO_RAW="https://raw.githubusercontent.com/andre4freelance/xclaude/main"
+
+say() { printf '%s\n' "$*" >&2; }
+
+# Trim leading/trailing whitespace.
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+# Known provider presets: "BASE_URL|MAIN_MODEL|HAIKU_MODEL". Empty if unknown
+# — an unknown/custom provider just means the URL and models are asked for
+# instead of pre-filled, not that the provider is rejected.
+provider_defaults() {
+  case "$1" in
+    deepseek)
+      printf '%s' "https://api.deepseek.com/anthropic|deepseek-v4-pro[1m]|deepseek-v4-flash" ;;
+    glm)
+      printf '%s' "https://api.z.ai/api/anthropic|glm-4.7|glm-4.5-air" ;;
+    *)
+      printf '%s' "" ;;
+  esac
+}
+
+# --- config file I/O --------------------------------------------------------
+
+read_field() {
+  local field="$1" line
+  [ -f "$CONFIG_FILE" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "${field}="*) printf '%s' "${line#"${field}="}"; return 0 ;;
+    esac
+  done < "$CONFIG_FILE"
+  return 0
+}
+
+save_config() {
+  local key url model_main model_haiku
+  key="$(trim "$1")" url="$(trim "$2")" model_main="$(trim "$3")" model_haiku="$(trim "$4")"
+  mkdir -p "$CONFIG_DIR"
+  (
+    umask 077
+    {
+      printf 'KEY=%s\n' "$key"
+      printf 'BASE_URL=%s\n' "$url"
+      printf 'MODEL_MAIN=%s\n' "$model_main"
+      printf 'MODEL_HAIKU=%s\n' "$model_haiku"
+    } > "$CONFIG_FILE"
+  )
+  chmod 600 "$CONFIG_FILE"
+  say "Config saved to $CONFIG_FILE"
+}
+
+# Read a secret from the terminal; fall back to stdin if /dev/tty is unusable.
+read_secret() {
+  local prompt="$1" value=""
+  printf '%s' "$prompt" >&2
+  if IFS= read -rs value 2>/dev/null < /dev/tty; then
+    :
+  else
+    IFS= read -rs value || true
+  fi
+  printf '\n' >&2
+  printf '%s' "$value"
+}
+
+# Read a visible value, pre-filled with a default the user can accept (Enter) or override.
+read_visible() {
+  local prompt="$1" default="${2:-}" value=""
+  if [ -n "$default" ]; then
+    printf '%s [%s]: ' "$prompt" "$default" >&2
+  else
+    printf '%s: ' "$prompt" >&2
+  fi
+  if IFS= read -r value 2>/dev/null < /dev/tty; then
+    :
+  else
+    IFS= read -r value || true
+  fi
+  value="$(trim "$value")"
+  if [ -z "$value" ]; then
+    printf '%s' "$default"
+  else
+    printf '%s' "$value"
+  fi
+}
+
+# Like read_visible, but re-prompts on an empty result (no default to fall
+# back on) and gives up after 3 tries instead of looping forever — matters
+# when stdin is a closed/empty pipe rather than a real terminal.
+require_visible() {
+  local prompt="$1" default="${2:-}" label="${3:-Value}" value tries=0
+  while :; do
+    value="$(read_visible "$prompt" "$default")"
+    [ -n "$value" ] && { printf '%s' "$value"; return 0; }
+    tries=$((tries + 1))
+    say "${label} can't be empty."
+    if [ "$tries" -ge 3 ]; then
+      say "Aborting after 3 empty attempts."
+      exit 1
+    fi
+  done
+}
+
+# Interactive first-time (or full re-) setup. Asks for URL + models — pre-filled
+# for known providers, required for unknown ones — plus the API key, unless a
+# key was already resolved elsewhere ($1).
+interactive_setup() {
+  local preset_key="${1:-}"
+  local defaults url_default model_main_default model_haiku_default rest
+  defaults="$(provider_defaults "$PROVIDER")"
+  if [ -n "$defaults" ]; then
+    url_default="${defaults%%|*}"
+    rest="${defaults#*|}"
+    model_main_default="${rest%%|*}"
+    model_haiku_default="${rest#*|}"
+  else
+    url_default="" model_main_default="" model_haiku_default=""
+  fi
+
+  say ""
+  say "┌──────────────────────────────────────────┐"
+  say "│  ${SELF} · first-time setup"
+  say "└──────────────────────────────────────────┘"
+  say ""
+  if [ -n "$defaults" ]; then
+    say "Provider '${PROVIDER}' recognized — defaults pre-filled below."
+    say "Press Enter to accept a default, or type your own (e.g. a"
+    say "non-official / self-hosted endpoint)."
+  else
+    say "Provider '${PROVIDER}' isn't a known preset — enter its details."
+  fi
+  say ""
+
+  local url
+  url="$(require_visible 'Base URL (Anthropic-compatible)' "$url_default" 'URL')"
+
+  local model_main
+  model_main="$(require_visible 'Model for Opus/Sonnet requests' "$model_main_default" 'Model name')"
+
+  local model_haiku
+  model_haiku="$(read_visible 'Model for Haiku/subagent requests' "${model_haiku_default:-$model_main}")"
+  [ -z "$model_haiku" ] && model_haiku="$model_main"
+
+  say ""
+  local key="$preset_key" tries=0
+  if [ -z "$key" ]; then
+    while :; do
+      key="$(trim "$(read_secret 'API key: ')")"
+      [ -n "$key" ] && break
+      tries=$((tries + 1))
+      say "Key can't be empty."
+      if [ "$tries" -ge 3 ]; then
+        say "Aborting after 3 empty attempts."
+        exit 1
+      fi
+    done
+  fi
+
+  save_config "$key" "$url" "$model_main" "$model_haiku"
+  say ""
+}
+
+print_help() {
+  say "Usage: $SELF [command] [args] | [claude arguments]"
+  say ""
+  say "  $SELF                        run claude with this provider's config"
+  say "  $SELF config [KEY]           full setup, or just replace the key"
+  say "  $SELF set-url [URL]          change the base URL"
+  say "  $SELF set-model [MAIN] [HAIKU]  change the model name(s)"
+  say "  $SELF reset                  delete the stored config"
+  say "  $SELF update                 self-update to the latest version"
+}
+
+# --- subcommands -------------------------------------------------------------
+case "${1:-}" in
+  help|--help|-h)
+    print_help
+    exit 0
+    ;;
+  config|--config|set-key|--set-key|change|--change|change-key|--change-key)
+    if [ -n "${2:-}" ]; then
+      if [ -f "$CONFIG_FILE" ]; then
+        save_config "$2" "$(read_field BASE_URL)" "$(read_field MODEL_MAIN)" "$(read_field MODEL_HAIKU)"
+      else
+        DEFAULTS="$(provider_defaults "$PROVIDER")"
+        if [ -n "$DEFAULTS" ]; then
+          REST="${DEFAULTS#*|}"
+          save_config "$2" "${DEFAULTS%%|*}" "${REST%%|*}" "${REST#*|}"
+        else
+          interactive_setup "$2"
+        fi
+      fi
+    else
+      interactive_setup
+    fi
+    say "Done. Run '$SELF' to start."
+    exit 0
+    ;;
+  set-url|--set-url|change-url|--change-url|url|--url)
+    if [ ! -f "$CONFIG_FILE" ]; then
+      say "No config yet — run '$SELF config' first."
+      exit 1
+    fi
+    if [ -n "${2:-}" ]; then
+      NEW_URL="$(trim "$2")"
+    else
+      NEW_URL="$(read_visible 'Base URL (Anthropic-compatible)' "$(read_field BASE_URL)")"
+    fi
+    [ -z "$NEW_URL" ] && { say "URL can't be empty."; exit 1; }
+    save_config "$(read_field KEY)" "$NEW_URL" "$(read_field MODEL_MAIN)" "$(read_field MODEL_HAIKU)"
+    say "Done."
+    exit 0
+    ;;
+  set-model|--set-model|change-model|--change-model|model|--model)
+    if [ ! -f "$CONFIG_FILE" ]; then
+      say "No config yet — run '$SELF config' first."
+      exit 1
+    fi
+    if [ -n "${2:-}" ]; then
+      NEW_MAIN="$(trim "$2")"
+      NEW_HAIKU="$(trim "${3:-$NEW_MAIN}")"
+    else
+      NEW_MAIN="$(read_visible 'Model for Opus/Sonnet requests' "$(read_field MODEL_MAIN)")"
+      NEW_HAIKU="$(read_visible 'Model for Haiku/subagent requests' "$(read_field MODEL_HAIKU)")"
+    fi
+    [ -z "$NEW_MAIN" ] && { say "Model can't be empty."; exit 1; }
+    [ -z "$NEW_HAIKU" ] && NEW_HAIKU="$NEW_MAIN"
+    save_config "$(read_field KEY)" "$(read_field BASE_URL)" "$NEW_MAIN" "$NEW_HAIKU"
+    say "Done."
+    exit 0
+    ;;
+  reset|--reset)
+    rm -f "$CONFIG_FILE"
+    say "Stored config removed."
+    exit 0
+    ;;
+  update|--update|upgrade|--upgrade)
+    say "Updating $SELF to the latest version..."
+    TMP="$(mktemp "${SELF_PATH}.XXXXXX")"
+    curl -fsSL "$REPO_RAW/aiclaude" -o "$TMP"
+    chmod +x "$TMP"
+    mv "$TMP" "$SELF_PATH"
+    say "Updated. Run '$SELF' to continue."
+    exit 0
+    ;;
+esac
+
+# --- resolve key / URL / models ---------------------------------------------
+KEY="$(read_field KEY)"
+BASE_URL="$(read_field BASE_URL)"
+MODEL_MAIN="$(read_field MODEL_MAIN)"
+MODEL_HAIKU="$(read_field MODEL_HAIKU)"
+
+# Not stored yet: take the key from the environment if it's there...
+if [ -z "$KEY" ]; then
+  ENV_KEY_VAR="${PROVIDER_UPPER}_API_KEY"
+  ENV_KEY_VALUE="${!ENV_KEY_VAR:-}"
+  if [ -n "$ENV_KEY_VALUE" ]; then
+    KEY="$(trim "$ENV_KEY_VALUE")"
+    say "Using \$$ENV_KEY_VAR from environment."
+  fi
+fi
+
+# Fill in URL/models from the known preset if this is a recognized provider.
+if [ -z "$BASE_URL" ] || [ -z "$MODEL_MAIN" ]; then
+  DEFAULTS="$(provider_defaults "$PROVIDER")"
+  if [ -n "$DEFAULTS" ]; then
+    REST="${DEFAULTS#*|}"
+    [ -z "$BASE_URL" ] && BASE_URL="${DEFAULTS%%|*}"
+    [ -z "$MODEL_MAIN" ] && MODEL_MAIN="${REST%%|*}"
+    [ -z "$MODEL_HAIKU" ] && MODEL_HAIKU="${REST#*|}"
+  fi
+fi
+
+# ...otherwise (or if still missing pieces) ask interactively.
+if [ -z "$KEY" ] || [ -z "$BASE_URL" ] || [ -z "$MODEL_MAIN" ]; then
+  interactive_setup "$KEY"
+  KEY="$(read_field KEY)"
+  BASE_URL="$(read_field BASE_URL)"
+  MODEL_MAIN="$(read_field MODEL_MAIN)"
+  MODEL_HAIKU="$(read_field MODEL_HAIKU)"
+fi
+
+if [ -z "$KEY" ]; then
+  say "No API key available. Run '$SELF config' to set one."
+  exit 1
+fi
+
+# --- launch ------------------------------------------------------------------
+if ! command -v claude >/dev/null 2>&1; then
+  say "claude CLI not found on PATH."
+  say "Install Claude Code first: https://docs.claude.com/en/docs/claude-code"
+  exit 127
+fi
+
+export ANTHROPIC_BASE_URL="$BASE_URL"
+export ANTHROPIC_AUTH_TOKEN="$KEY"
+export ANTHROPIC_MODEL="$MODEL_MAIN"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL_MAIN"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL_MAIN"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL_HAIKU"
+export CLAUDE_CODE_SUBAGENT_MODEL="$MODEL_HAIKU"
+export CLAUDE_CODE_EFFORT_LEVEL="max"
+
+exec claude --dangerously-skip-permissions "$@"
