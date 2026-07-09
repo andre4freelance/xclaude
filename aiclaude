@@ -72,6 +72,32 @@ provider_defaults() {
   esac
 }
 
+# Best-effort: ask the provider's OpenAI-style /v1/models what the model's
+# max input window is. Echoes the integer, or nothing if it can't be found.
+detect_max_input() {
+  local base="$1" key="$2" model="$3" body
+  command -v python3 >/dev/null 2>&1 || return 0
+  body="$(curl -fsSL -m 15 "${base%/}/v1/models" -H "Authorization: Bearer $key" 2>/dev/null)" || return 0
+  [ -n "$body" ] || return 0
+  printf '%s' "$body" | MODEL="$model" python3 -c '
+import sys, json, os
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+data = d.get("data", d if isinstance(d, list) else [])
+want = os.environ.get("MODEL", "")
+if want.endswith("[1m]"):
+    want = want[:-4]
+for m in data:
+    if isinstance(m, dict) and m.get("id") == want:
+        v = m.get("max_input_tokens") or m.get("context_length") or m.get("context_window")
+        if isinstance(v, int):
+            print(v)
+        break
+' 2>/dev/null
+}
+
 # --- config file I/O --------------------------------------------------------
 
 read_field() {
@@ -86,11 +112,12 @@ read_field() {
 }
 
 save_config() {
-  local key url model_main model_haiku effort
+  local key url model_main model_haiku effort context
   key="$(trim "$1")" url="$(trim "$2")" model_main="$(trim "$3")" model_haiku="$(trim "$4")"
-  # 5th arg sets EFFORT; if omitted, preserve whatever is already stored
-  # (must be read before we truncate the file below).
+  # Trailing args set EFFORT ($5) and CONTEXT ($6); if omitted, preserve
+  # whatever is already stored (read before we truncate the file below).
   if [ "$#" -ge 5 ]; then effort="$(trim "$5")"; else effort="$(read_field EFFORT)"; fi
+  if [ "$#" -ge 6 ]; then context="$(trim "$6")"; else context="$(read_field CONTEXT)"; fi
   mkdir -p "$CONFIG_DIR"
   (
     umask 077
@@ -100,6 +127,7 @@ save_config() {
       printf 'MODEL_MAIN=%s\n' "$model_main"
       printf 'MODEL_HAIKU=%s\n' "$model_haiku"
       printf 'EFFORT=%s\n' "$effort"
+      printf 'CONTEXT=%s\n' "$context"
     } > "$CONFIG_FILE"
   )
   chmod 600 "$CONFIG_FILE"
@@ -225,6 +253,7 @@ print_help() {
   say "  $SELF set-model [MAIN] [HAIKU]  change the model name(s)"
   say "  $SELF set-effort [LEVEL]     pin effort (low|medium|high|xhigh|max),"
   say "                               or 'off' to let in-session /effort control it"
+  say "  $SELF set-context [MODE]     context window: 1m | default | auto"
   say "  $SELF reset                  delete the stored config"
   say "  $SELF update                 self-update to the latest version"
 }
@@ -308,6 +337,42 @@ case "${1:-}" in
     fi
     exit 0
     ;;
+  set-context|--set-context|change-context|--change-context|context|--context)
+    if [ ! -f "$CONFIG_FILE" ]; then
+      say "No config yet — run '$SELF config' first."
+      exit 1
+    fi
+    WANT="$(printf '%s' "$(trim "${2:-}")" | tr '[:upper:]' '[:lower:]')"
+    case "$WANT" in
+      1m|1000k|1000000) NEW_CONTEXT="1m" ;;
+      default|200k|off|"") NEW_CONTEXT="default" ;;
+      auto)
+        say "Detecting context window for '$(read_field MODEL_MAIN)' from $(read_field BASE_URL) ..."
+        MAXTOK="$(detect_max_input "$(read_field BASE_URL)" "$(read_field KEY)" "$(read_field MODEL_MAIN)")"
+        if [ -z "$MAXTOK" ]; then
+          say "Couldn't auto-detect it (needs python3 and a provider that reports"
+          say "max_input_tokens). Set it manually instead:"
+          say "  $SELF set-context 1m       # 1M-token window"
+          say "  $SELF set-context default  # standard 200K window"
+          exit 1
+        fi
+        if [ "$MAXTOK" -ge 1000000 ] 2>/dev/null; then
+          NEW_CONTEXT="1m"; say "Detected $MAXTOK tokens → enabling the 1M window."
+        else
+          NEW_CONTEXT="default"; say "Detected $MAXTOK tokens → keeping the standard 200K window."
+        fi
+        ;;
+      *) say "Context must be: 1m, default, or auto."; exit 1 ;;
+    esac
+    save_config "$(read_field KEY)" "$(read_field BASE_URL)" "$(read_field MODEL_MAIN)" "$(read_field MODEL_HAIKU)" "$(read_field EFFORT)" "$NEW_CONTEXT"
+    if [ "$NEW_CONTEXT" = "1m" ]; then
+      say "Done. 1M context on (appends the [1m] suffix Claude Code needs; the"
+      say "suffix is stripped before the request reaches your provider)."
+    else
+      say "Done. Standard 200K context (no [1m] suffix)."
+    fi
+    exit 0
+    ;;
   reset|--reset)
     rm -f "$CONFIG_FILE"
     say "Stored config removed."
@@ -376,11 +441,22 @@ if ! command -v claude >/dev/null 2>&1; then
   exit 127
 fi
 
+# A [1m] suffix on the model name tells Claude Code to use a 1M-token context
+# window; it strips the suffix before sending the request to the provider.
+# Only add it when the config asks for 1M, and never double it up.
+CONTEXT="$(read_field CONTEXT)"
+BARE_MAIN="${MODEL_MAIN%\[1m\]}"
+if [ "$CONTEXT" = "1m" ]; then
+  MAIN_MODEL="${BARE_MAIN}[1m]"
+else
+  MAIN_MODEL="$BARE_MAIN"
+fi
+
 export ANTHROPIC_BASE_URL="$BASE_URL"
 export ANTHROPIC_AUTH_TOKEN="$KEY"
-export ANTHROPIC_MODEL="$MODEL_MAIN"
-export ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL_MAIN"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL_MAIN"
+export ANTHROPIC_MODEL="$MAIN_MODEL"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$MAIN_MODEL"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$MAIN_MODEL"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL_HAIKU"
 export CLAUDE_CODE_SUBAGENT_MODEL="$MODEL_HAIKU"
 

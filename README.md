@@ -106,12 +106,34 @@ The key is resolved in this order:
 <name>claude set-url <URL>       # change just the base URL
 <name>claude set-model <MAIN> [HAIKU]   # change the model name(s)
 <name>claude set-effort <LEVEL>  # pin effort, or 'off' to control it in-session
+<name>claude set-context <MODE>  # context window: 1m | default | auto
 <name>claude reset               # delete everything stored for this provider
 ```
 
 `change-key`/`change`/`set-key` are accepted as aliases for `config`;
 `change-url`/`url` for `set-url`; `change-model`/`model` for `set-model`;
-`change-effort`/`effort` for `set-effort`.
+`change-effort`/`effort` for `set-effort`; `change-context`/`context` for
+`set-context`.
+
+### Context window (1M vs 200K)
+
+Claude Code assumes a **200K-token** context window for any model it doesn't
+recognize — which is every third-party model. If your model actually supports
+a **1M** window (e.g. GLM-5.2, DeepSeek), tell the wrapper so Claude Code
+accounts for the full window and compacts at the right time:
+
+```bash
+<name>claude set-context 1m       # use the 1M window
+<name>claude set-context default  # standard 200K window
+<name>claude set-context auto     # ask the provider and pick automatically
+```
+
+`auto` reads the model's advertised `max_input_tokens` from the provider's
+OpenAI-style `/v1/models` endpoint (needs `python3`); if it can't tell, it
+asks you to choose manually. Under the hood, `1m` appends the `[1m]` suffix
+Claude Code uses to select its 1M window — and Claude Code **strips that
+suffix before the request reaches your provider**, so the provider still sees
+the plain model name.
 
 ### Effort level
 
@@ -142,9 +164,9 @@ account can read it. Treat it like any other local credential.
 ```sh
 ANTHROPIC_BASE_URL="<the configured base URL>"
 ANTHROPIC_AUTH_TOKEN="<the configured API key>"
-ANTHROPIC_MODEL="<the configured main model>"
-ANTHROPIC_DEFAULT_OPUS_MODEL="<the configured main model>"
-ANTHROPIC_DEFAULT_SONNET_MODEL="<the configured main model>"
+ANTHROPIC_MODEL="<main model>"          # + "[1m]" suffix if context = 1m
+ANTHROPIC_DEFAULT_OPUS_MODEL="<main model>"      # + "[1m]" if context = 1m
+ANTHROPIC_DEFAULT_SONNET_MODEL="<main model>"    # + "[1m]" if context = 1m
 ANTHROPIC_DEFAULT_HAIKU_MODEL="<the configured haiku/cheap model>"
 CLAUDE_CODE_SUBAGENT_MODEL="<the configured haiku/cheap model>"
 # CLAUDE_CODE_EFFORT_LEVEL is set ONLY if you pinned one via set-effort

@@ -52,11 +52,32 @@ function Get-ProviderDefaults([string]$Name) {
   }
 }
 
-function Save-Config([string]$Key, [string]$Url, [string]$Main, [string]$Haiku, [string]$Effort = $null) {
+# Best-effort: ask the provider's OpenAI-style /v1/models what the model's max
+# input window is. Returns the integer, or 0 if it can't be determined.
+function Get-MaxInput([string]$Base, [string]$Key, [string]$Model) {
+  $want = $Model
+  if ($want.EndsWith('[1m]')) { $want = $want.Substring(0, $want.Length - 4) }
+  try {
+    $url = ($Base.TrimEnd('/')) + '/v1/models'
+    $resp = Invoke-RestMethod -Uri $url -Headers @{ Authorization = "Bearer $Key" } -TimeoutSec 15
+    $data = if ($resp.data) { $resp.data } else { $resp }
+    foreach ($m in $data) {
+      if ($m.id -eq $want) {
+        foreach ($f in @('max_input_tokens','context_length','context_window')) {
+          if ($m.PSObject.Properties.Name -contains $f -and $m.$f) { return [int]$m.$f }
+        }
+      }
+    }
+  } catch { }
+  return 0
+}
+
+function Save-Config([string]$Key, [string]$Url, [string]$Main, [string]$Haiku, [string]$Effort = $null, [string]$Context = $null) {
   New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
-  # $null Effort means "preserve whatever is stored"; '' means clear it.
+  # $null means "preserve whatever is stored"; '' means clear it.
   if ($null -eq $Effort) { $Effort = Get-Field 'EFFORT' }
-  $lines = @("KEY=$Key", "BASE_URL=$Url", "MODEL_MAIN=$Main", "MODEL_HAIKU=$Haiku", "EFFORT=$Effort")
+  if ($null -eq $Context) { $Context = Get-Field 'CONTEXT' }
+  $lines = @("KEY=$Key", "BASE_URL=$Url", "MODEL_MAIN=$Main", "MODEL_HAIKU=$Haiku", "EFFORT=$Effort", "CONTEXT=$Context")
   Set-Content -Path $ConfigFile -Value $lines -Encoding ASCII
   try {
     $acl = New-Object System.Security.AccessControl.FileSecurity
@@ -154,6 +175,7 @@ function Print-Help {
   Write-Host "  $Self set-model [MAIN] [HAIKU] change the model name(s)"
   Write-Host "  $Self set-effort [LEVEL]       pin effort (low|medium|high|xhigh|max),"
   Write-Host "                                 or 'off' to let /effort control it"
+  Write-Host "  $Self set-context [MODE]       context window: 1m | default | auto"
   Write-Host "  $Self reset                    delete the stored config"
   Write-Host "  $Self update                   self-update to the latest version"
 }
@@ -231,6 +253,41 @@ if ($args.Count -ge 1) {
       }
       exit 0
     }
+    '^(set-context|--set-context|change-context|--change-context|context|--context)$' {
+      if (-not (Test-Path $ConfigFile)) {
+        Write-Host "No config yet - run '$Self config' first."
+        exit 1
+      }
+      $want = if ($args.Count -ge 2) { "$($args[1])".Trim().ToLower() } else { '' }
+      $newContext = $null
+      switch ($want) {
+        { $_ -in @('1m','1000k','1000000') } { $newContext = '1m' }
+        { $_ -in @('default','200k','off','') } { $newContext = 'default' }
+        'auto' {
+          Write-Host "Detecting context window for '$(Get-Field 'MODEL_MAIN')' from $(Get-Field 'BASE_URL') ..."
+          $maxTok = Get-MaxInput (Get-Field 'BASE_URL') (Get-Field 'KEY') (Get-Field 'MODEL_MAIN')
+          if ($maxTok -le 0) {
+            Write-Host "Couldn't auto-detect it. Set it manually instead:"
+            Write-Host "  $Self set-context 1m       # 1M-token window"
+            Write-Host "  $Self set-context default  # standard 200K window"
+            exit 1
+          }
+          if ($maxTok -ge 1000000) {
+            $newContext = '1m'; Write-Host "Detected $maxTok tokens -> enabling the 1M window."
+          } else {
+            $newContext = 'default'; Write-Host "Detected $maxTok tokens -> keeping the standard 200K window."
+          }
+        }
+        default { Write-Host 'Context must be: 1m, default, or auto.'; exit 1 }
+      }
+      Save-Config (Get-Field 'KEY') (Get-Field 'BASE_URL') (Get-Field 'MODEL_MAIN') (Get-Field 'MODEL_HAIKU') (Get-Field 'EFFORT') $newContext
+      if ($newContext -eq '1m') {
+        Write-Host 'Done. 1M context on (appends the [1m] suffix Claude Code needs; stripped before it reaches your provider).'
+      } else {
+        Write-Host 'Done. Standard 200K context (no [1m] suffix).'
+      }
+      exit 0
+    }
     '^(reset|--reset)$' {
       if (Test-Path $ConfigFile) { Remove-Item $ConfigFile -Force }
       Write-Host 'Stored config removed.'
@@ -296,11 +353,16 @@ if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
   exit 127
 }
 
+# A [1m] suffix on the model name tells Claude Code to use a 1M-token context
+# window; it strips the suffix before sending the request to the provider.
+$bareMain = if ($Main.EndsWith('[1m]')) { $Main.Substring(0, $Main.Length - 4) } else { $Main }
+$mainModel = if ((Get-Field 'CONTEXT') -eq '1m') { "$bareMain[1m]" } else { $bareMain }
+
 $env:ANTHROPIC_BASE_URL             = $Url
 $env:ANTHROPIC_AUTH_TOKEN           = $Key
-$env:ANTHROPIC_MODEL                = $Main
-$env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $Main
-$env:ANTHROPIC_DEFAULT_SONNET_MODEL = $Main
+$env:ANTHROPIC_MODEL                = $mainModel
+$env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $mainModel
+$env:ANTHROPIC_DEFAULT_SONNET_MODEL = $mainModel
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = $Haiku
 $env:CLAUDE_CODE_SUBAGENT_MODEL     = $Haiku
 
