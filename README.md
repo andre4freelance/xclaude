@@ -208,6 +208,33 @@ will authenticate and the model will answer. Typical verdicts:
 - **endpoint not found (404)** — base URL wrong (remember: no trailing `/v1`).
 - **model rejected (400/404)** — the model id isn't valid for this key.
 
+### OpenAI-only providers (e.g. NVIDIA NIM free) via a Cloudflare Worker
+
+Some providers (NVIDIA NIM's free API, most aggregators' raw endpoints) only
+speak **OpenAI** format — they have no `/v1/messages`, so Claude Code can't use
+them directly. [`nvidia-worker.js`](nvidia-worker.js) is a single-file
+**Cloudflare Worker** that bridges the gap: it accepts Anthropic Messages calls
+and translates them (streaming + tool calls included) to the OpenAI API.
+
+No local install — deploy it from the Cloudflare dashboard:
+
+1. **Workers & Pages → Create → Create Worker →** deploy, then **Edit code** and
+   paste `nvidia-worker.js`. Deploy.
+2. **Settings → Variables and Secrets:**
+   - `NVIDIA_API_KEY` (secret) — your `nvapi-…` key
+   - `NVIDIA_MODEL` (text) — e.g. `z-ai/glm-5.2` (forces the model)
+   - `PROXY_KEY` (secret, optional) — a password so only you can use the URL
+3. Point a wrapper at the Worker URL:
+   ```bash
+   zaiclaude set-url https://<your-worker>.workers.dev
+   zaiclaude config <PROXY_KEY>       # the key = your PROXY_KEY (or anything)
+   zaiclaude check                    # should go green
+   ```
+
+> The model must support **tool calling** (Claude Code depends on it). NVIDIA's
+> free tier is rate-limited (about 40 req/min). The Worker is generic — point
+> `NVIDIA_API_KEY`/`api_base` at any OpenAI-compatible endpoint to reuse it.
+
 ### Context window (1M vs 200K)
 
 Claude Code assumes a **200K-token** context window for any model it doesn't
