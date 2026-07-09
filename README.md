@@ -172,38 +172,38 @@ The key is resolved in this order:
 
 ### Permission prompts (ask vs skip)
 
-By default the wrapper launches `claude --dangerously-skip-permissions`, so
-Claude runs tools (edits, shell commands, API calls) **without asking**. That's
-convenient, but for sensitive work — production systems, anything you want to
-review first — you'll want prompts back:
+**By default Claude asks before running tools** (edits, shell commands, API
+calls) — the safe choice, especially for a third-party/aggregator model or
+production work. If you want the fast, no-prompt flow instead:
 
 ```bash
-<name>claude set-permissions ask   # Claude asks before each tool action
-<name>claude set-permissions skip  # back to no-prompt (default)
+<name>claude set-permissions skip  # run tools without asking (--dangerously-skip-permissions)
+<name>claude set-permissions ask   # back to prompting before each action (default)
 ```
 
-> Use `ask` when the endpoint is a third-party/aggregator model and you're
-> working on anything you can't afford to have changed without review.
+> Only `skip` disables the prompts; anything else (including a brand-new
+> install) keeps them on. Use `skip` only in a directory/endpoint you trust.
 
 ### Context window (1M vs 200K)
 
 Claude Code assumes a **200K-token** context window for any model it doesn't
-recognize — which is every third-party model. If your model actually supports
-a **1M** window (e.g. GLM-5.2, DeepSeek), tell the wrapper so Claude Code
-accounts for the full window and compacts at the right time:
+recognize — which is every third-party model. So the wrapper **auto-detects it
+for you**: on first setup and whenever you `set-model`, it reads the model's
+advertised `max_input_tokens` from the provider's OpenAI-style `/v1/models`
+endpoint and picks the right window (needs `python3`; falls back to 200K if the
+provider doesn't report it). You normally don't have to think about it.
+
+To override manually:
 
 ```bash
-<name>claude set-context 1m       # use the 1M window
-<name>claude set-context default  # standard 200K window
-<name>claude set-context auto     # ask the provider and pick automatically
+<name>claude set-context 1m       # force the 1M window
+<name>claude set-context default  # force the standard 200K window
+<name>claude set-context auto     # re-detect from the provider now
 ```
 
-`auto` reads the model's advertised `max_input_tokens` from the provider's
-OpenAI-style `/v1/models` endpoint (needs `python3`); if it can't tell, it
-asks you to choose manually. Under the hood, `1m` appends the `[1m]` suffix
-Claude Code uses to select its 1M window — and Claude Code **strips that
-suffix before the request reaches your provider**, so the provider still sees
-the plain model name.
+Under the hood, `1m` appends the `[1m]` suffix Claude Code uses to select its
+1M window — and Claude Code **strips that suffix before the request reaches
+your provider**, so the provider still sees the plain model name.
 
 ### Effort level
 
@@ -242,13 +242,13 @@ CLAUDE_CODE_SUBAGENT_MODEL="<the configured haiku/cheap model>"
 # CLAUDE_CODE_EFFORT_LEVEL is set ONLY if you pinned one via set-effort
 ```
 
-Then runs `claude "$@"` — with `--dangerously-skip-permissions` unless you ran
-`set-permissions ask`.
+Then runs `claude "$@"` — adding `--dangerously-skip-permissions` **only** if
+you ran `set-permissions skip` (by default Claude prompts before each tool).
 
 > **Note:** `--dangerously-skip-permissions` lets Claude run tools without
-> per-action approval prompts. Convenient, but it means commands and file
-> edits execute without asking. Use it in a directory you trust, or switch it
-> off with `<name>claude set-permissions ask`.
+> per-action approval prompts. Convenient, but commands and file edits then
+> execute without asking — only turn it on (`set-permissions skip`) in a
+> directory and against an endpoint you trust.
 
 ## Uninstall
 

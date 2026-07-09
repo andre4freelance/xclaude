@@ -72,6 +72,22 @@ function Get-MaxInput([string]$Base, [string]$Key, [string]$Model) {
   return 0
 }
 
+# Best-effort: detect the current model's window from the provider and store
+# CONTEXT accordingly. Silent no-op if it can't be determined.
+function Set-AutoContext {
+  $base = Get-Field 'BASE_URL'; $key = Get-Field 'KEY'; $model = Get-Field 'MODEL_MAIN'
+  if (-not $base -or -not $key -or -not $model) { return }
+  $maxTok = Get-MaxInput $base $key $model
+  if ($maxTok -le 0) { return }
+  if ($maxTok -ge 1000000) {
+    Save-Config $key $base $model (Get-Field 'MODEL_HAIKU') (Get-Field 'EFFORT') '1m'
+    Write-Host "Context: provider reports $maxTok tokens -> enabled the 1M window."
+  } else {
+    Save-Config $key $base $model (Get-Field 'MODEL_HAIKU') (Get-Field 'EFFORT') 'default'
+    Write-Host "Context: provider reports $maxTok tokens -> using the standard 200K window."
+  }
+}
+
 function Save-Config([string]$Key, [string]$Url, [string]$Main, [string]$Haiku, [string]$Effort = $null, [string]$Context = $null, [string]$Perms = $null) {
   New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
   # $null means "preserve whatever is stored"; '' means clear it.
@@ -164,6 +180,8 @@ function Invoke-Setup([string]$PresetKey) {
   }
 
   Save-Config $key $url $main $haiku
+  # By default, take the context window from the provider (best-effort).
+  Set-AutoContext
   Write-Host ''
 }
 
@@ -234,6 +252,8 @@ if ($args.Count -ge 1) {
       if (-not $newMain) { Write-Host "Model can't be empty."; exit 1 }
       if (-not $newHaiku) { $newHaiku = $newMain }
       Save-Config (Get-Field 'KEY') (Get-Field 'BASE_URL') $newMain $newHaiku
+      # Re-detect the context window for the new model (best-effort).
+      Set-AutoContext
       Write-Host 'Done.'
       exit 0
     }
@@ -299,8 +319,8 @@ if ($args.Count -ge 1) {
       $want = if ($args.Count -ge 2) { "$($args[1])".Trim().ToLower() } else { '' }
       $newPerms = $null
       switch ($want) {
-        { $_ -in @('ask','prompt','safe','on') } { $newPerms = 'ask' }
-        { $_ -in @('skip','yolo','bypass','off','') } { $newPerms = 'skip' }
+        { $_ -in @('ask','prompt','safe','on','') } { $newPerms = 'ask' }
+        { $_ -in @('skip','yolo','bypass','off') } { $newPerms = 'skip' }
         default { Write-Host 'Permissions must be: ask (prompt before actions) or skip (no prompts).'; exit 1 }
       }
       Save-Config (Get-Field 'KEY') (Get-Field 'BASE_URL') (Get-Field 'MODEL_MAIN') (Get-Field 'MODEL_HAIKU') (Get-Field 'EFFORT') (Get-Field 'CONTEXT') $newPerms
@@ -406,11 +426,11 @@ if ($effort -in @('low','medium','high','xhigh','max')) {
   Remove-Item Env:\CLAUDE_CODE_EFFORT_LEVEL -ErrorAction SilentlyContinue
 }
 
-# Permissions: 'ask' runs claude normally (prompts before tools); anything else
-# keeps the original --dangerously-skip-permissions behavior.
-if ((Get-Field 'PERMISSIONS') -eq 'ask') {
-  & claude @args
-} else {
+# Permissions: default is to let Claude prompt before tools. Only skip those
+# prompts when the config explicitly says 'skip'.
+if ((Get-Field 'PERMISSIONS') -eq 'skip') {
   & claude --dangerously-skip-permissions @args
+} else {
+  & claude @args
 }
 exit $LASTEXITCODE

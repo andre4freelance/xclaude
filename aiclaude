@@ -98,6 +98,24 @@ for m in data:
 ' 2>/dev/null
 }
 
+# Best-effort: detect the current model's window from the provider and store
+# CONTEXT accordingly. Silent no-op if it can't be determined (no python3,
+# provider doesn't report it, etc.) — leaves whatever is already set.
+auto_set_context() {
+  local base key model maxtok
+  base="$(read_field BASE_URL)"; key="$(read_field KEY)"; model="$(read_field MODEL_MAIN)"
+  [ -n "$base" ] && [ -n "$key" ] && [ -n "$model" ] || return 0
+  maxtok="$(detect_max_input "$base" "$key" "$model")"
+  [ -n "$maxtok" ] || return 0
+  if [ "$maxtok" -ge 1000000 ] 2>/dev/null; then
+    save_config "$key" "$base" "$model" "$(read_field MODEL_HAIKU)" "$(read_field EFFORT)" "1m"
+    say "Context: provider reports $maxtok tokens → enabled the 1M window."
+  else
+    save_config "$key" "$base" "$model" "$(read_field MODEL_HAIKU)" "$(read_field EFFORT)" "default"
+    say "Context: provider reports $maxtok tokens → using the standard 200K window."
+  fi
+}
+
 # --- config file I/O --------------------------------------------------------
 
 read_field() {
@@ -243,6 +261,9 @@ interactive_setup() {
   fi
 
   save_config "$key" "$url" "$model_main" "$model_haiku"
+  # By default, take the context window from the provider (not Claude Code's
+  # 200K assumption). Best-effort; leaves the default if it can't be detected.
+  auto_set_context
   say ""
 }
 
@@ -317,6 +338,8 @@ case "${1:-}" in
     [ -z "$NEW_MAIN" ] && { say "Model can't be empty."; exit 1; }
     [ -z "$NEW_HAIKU" ] && NEW_HAIKU="$NEW_MAIN"
     save_config "$(read_field KEY)" "$(read_field BASE_URL)" "$NEW_MAIN" "$NEW_HAIKU"
+    # Re-detect the context window for the new model (best-effort).
+    auto_set_context
     say "Done."
     exit 0
     ;;
@@ -384,8 +407,8 @@ case "${1:-}" in
     fi
     WANT="$(printf '%s' "$(trim "${2:-}")" | tr '[:upper:]' '[:lower:]')"
     case "$WANT" in
-      ask|prompt|safe|on) NEW_PERMS="ask" ;;
-      skip|yolo|bypass|off|"") NEW_PERMS="skip" ;;
+      ask|prompt|safe|on|"") NEW_PERMS="ask" ;;
+      skip|yolo|bypass|off) NEW_PERMS="skip" ;;
       *) say "Permissions must be: ask (prompt before actions) or skip (no prompts)."; exit 1 ;;
     esac
     save_config "$(read_field KEY)" "$(read_field BASE_URL)" "$(read_field MODEL_MAIN)" "$(read_field MODEL_HAIKU)" "$(read_field EFFORT)" "$(read_field CONTEXT)" "$NEW_PERMS"
@@ -501,10 +524,10 @@ case "$EFFORT" in
   *) : ;;  # unset/off/auto: leave it to /effort and settings.json
 esac
 
-# Permissions: 'ask' runs claude normally (it prompts before tools); anything
-# else (default) keeps the original --dangerously-skip-permissions behavior.
-if [ "$(read_field PERMISSIONS)" = "ask" ]; then
-  exec claude "$@"
-else
+# Permissions: default is to let Claude prompt before running tools. Only skip
+# those prompts when the config explicitly says 'skip'.
+if [ "$(read_field PERMISSIONS)" = "skip" ]; then
   exec claude --dangerously-skip-permissions "$@"
+else
+  exec claude "$@"
 fi
