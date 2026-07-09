@@ -437,7 +437,7 @@ case "${1:-}" in
   update|--update|upgrade|--upgrade)
     say "Updating $SELF to the latest version..."
     TMP="$(mktemp "${SELF_PATH}.XXXXXX")"
-    if ! fetch "aiclaude" "$TMP"; then
+    if ! fetch "xclaude" "$TMP"; then
       rm -f "$TMP"
       say "Download failed from every mirror. Try again in a minute."
       exit 1

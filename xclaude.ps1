@@ -349,7 +349,7 @@ if ($args.Count -ge 1) {
       Write-Host "Updating $Self to the latest version..."
       $target = $MyInvocation.MyCommand.Path
       $tmp = "$target.new"
-      if (-not (Get-RepoFile 'aiclaude.ps1' $tmp)) {
+      if (-not (Get-RepoFile 'xclaude.ps1' $tmp)) {
         if (Test-Path $tmp) { Remove-Item $tmp -Force }
         Write-Host 'Download failed from every mirror. Try again in a minute.'
         exit 1

@@ -12,7 +12,7 @@ set -euo pipefail
 OWNER="andre4freelance"
 REPO="xclaude"
 BRANCH="main"
-BIN_DIR="${DEEPCLAUDE_BIN_DIR:-$HOME/.local/bin}"
+BIN_DIR="${XCLAUDE_BIN_DIR:-$HOME/.local/bin}"
 
 say() { printf '%s\n' "$*" >&2; }
 
@@ -54,7 +54,7 @@ fetch() {
   return 1
 }
 
-PROVIDER="${1:-${AICLAUDE_PROVIDER:-}}"
+PROVIDER="${1:-${XCLAUDE_PROVIDER:-}}"
 
 if [ -z "$PROVIDER" ]; then
   say ""
@@ -79,7 +79,7 @@ CMD_NAME="${PROVIDER}claude"
 mkdir -p "$BIN_DIR"
 
 say "Installing $CMD_NAME to $BIN_DIR ..."
-if ! fetch "aiclaude" "$BIN_DIR/$CMD_NAME"; then
+if ! fetch "xclaude" "$BIN_DIR/$CMD_NAME"; then
   say "Download failed from every mirror (raw.githubusercontent.com, GitHub API, jsDelivr)."
   say "Check your connection and try again in a minute."
   exit 1

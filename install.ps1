@@ -1,7 +1,7 @@
 # <provider>claude installer for Windows (PowerShell).
 # Usage:
 #   irm https://raw.githubusercontent.com/andre4freelance/xclaude/main/install.ps1 | iex
-#   $env:AICLAUDE_PROVIDER='glm'; irm .../install.ps1 | iex   # non-interactive
+#   $env:XCLAUDE_PROVIDER='glm'; irm .../install.ps1 | iex   # non-interactive
 
 $ErrorActionPreference = 'Stop'
 
@@ -26,7 +26,7 @@ function Get-RepoFile([string]$Path, [string]$OutFile) {
   return $false
 }
 
-$Provider = $env:AICLAUDE_PROVIDER
+$Provider = $env:XCLAUDE_PROVIDER
 if (-not $Provider) {
   Write-Host ''
   Write-Host 'Which AI provider are you setting up?'
@@ -46,7 +46,7 @@ $Dest = Join-Path $env:LOCALAPPDATA "Programs\$CmdName"
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 
 Write-Host "Installing $CmdName to $Dest ..."
-if (-not (Get-RepoFile 'aiclaude.ps1' (Join-Path $Dest "$CmdName.ps1"))) {
+if (-not (Get-RepoFile 'xclaude.ps1' (Join-Path $Dest "$CmdName.ps1"))) {
   Write-Host 'Download failed from every mirror (raw.githubusercontent.com, GitHub API, jsDelivr).'
   Write-Host 'Check your connection and try again in a minute.'
   exit 1
