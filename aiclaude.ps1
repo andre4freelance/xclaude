@@ -52,9 +52,11 @@ function Get-ProviderDefaults([string]$Name) {
   }
 }
 
-function Save-Config([string]$Key, [string]$Url, [string]$Main, [string]$Haiku) {
+function Save-Config([string]$Key, [string]$Url, [string]$Main, [string]$Haiku, [string]$Effort = $null) {
   New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
-  $lines = @("KEY=$Key", "BASE_URL=$Url", "MODEL_MAIN=$Main", "MODEL_HAIKU=$Haiku")
+  # $null Effort means "preserve whatever is stored"; '' means clear it.
+  if ($null -eq $Effort) { $Effort = Get-Field 'EFFORT' }
+  $lines = @("KEY=$Key", "BASE_URL=$Url", "MODEL_MAIN=$Main", "MODEL_HAIKU=$Haiku", "EFFORT=$Effort")
   Set-Content -Path $ConfigFile -Value $lines -Encoding ASCII
   try {
     $acl = New-Object System.Security.AccessControl.FileSecurity
@@ -150,6 +152,8 @@ function Print-Help {
   Write-Host "  $Self config [KEY]             full setup, or just replace the key"
   Write-Host "  $Self set-url [URL]            change the base URL"
   Write-Host "  $Self set-model [MAIN] [HAIKU] change the model name(s)"
+  Write-Host "  $Self set-effort [LEVEL]       pin effort (low|medium|high|xhigh|max),"
+  Write-Host "                                 or 'off' to let /effort control it"
   Write-Host "  $Self reset                    delete the stored config"
   Write-Host "  $Self update                   self-update to the latest version"
 }
@@ -206,6 +210,25 @@ if ($args.Count -ge 1) {
       if (-not $newHaiku) { $newHaiku = $newMain }
       Save-Config (Get-Field 'KEY') (Get-Field 'BASE_URL') $newMain $newHaiku
       Write-Host 'Done.'
+      exit 0
+    }
+    '^(set-effort|--set-effort|change-effort|--change-effort|effort|--effort)$' {
+      if (-not (Test-Path $ConfigFile)) {
+        Write-Host "No config yet - run '$Self config' first."
+        exit 1
+      }
+      $newEffort = if ($args.Count -ge 2) { "$($args[1])".Trim().ToLower() } else { 'off' }
+      if (-not $newEffort) { $newEffort = 'off' }
+      if ($newEffort -notin @('low','medium','high','xhigh','max','off')) {
+        Write-Host "Effort must be: low, medium, high, xhigh, max, or off (off = /effort controls it)."
+        exit 1
+      }
+      Save-Config (Get-Field 'KEY') (Get-Field 'BASE_URL') (Get-Field 'MODEL_MAIN') (Get-Field 'MODEL_HAIKU') $newEffort
+      if ($newEffort -eq 'off') {
+        Write-Host 'Done. Effort now controlled by /effort inside the session.'
+      } else {
+        Write-Host "Done. Effort pinned to '$newEffort'."
+      }
       exit 0
     }
     '^(reset|--reset)$' {
@@ -280,7 +303,14 @@ $env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $Main
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $Main
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = $Haiku
 $env:CLAUDE_CODE_SUBAGENT_MODEL     = $Haiku
-$env:CLAUDE_CODE_EFFORT_LEVEL       = 'max'
+
+# Only pin effort if the config asks for it; otherwise leave /effort in charge.
+$effort = (Get-Field 'EFFORT').Trim().ToLower()
+if ($effort -in @('low','medium','high','xhigh','max')) {
+  $env:CLAUDE_CODE_EFFORT_LEVEL = $effort
+} else {
+  Remove-Item Env:\CLAUDE_CODE_EFFORT_LEVEL -ErrorAction SilentlyContinue
+}
 
 & claude --dangerously-skip-permissions @args
 exit $LASTEXITCODE

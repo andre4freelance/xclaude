@@ -86,8 +86,11 @@ read_field() {
 }
 
 save_config() {
-  local key url model_main model_haiku
+  local key url model_main model_haiku effort
   key="$(trim "$1")" url="$(trim "$2")" model_main="$(trim "$3")" model_haiku="$(trim "$4")"
+  # 5th arg sets EFFORT; if omitted, preserve whatever is already stored
+  # (must be read before we truncate the file below).
+  if [ "$#" -ge 5 ]; then effort="$(trim "$5")"; else effort="$(read_field EFFORT)"; fi
   mkdir -p "$CONFIG_DIR"
   (
     umask 077
@@ -96,6 +99,7 @@ save_config() {
       printf 'BASE_URL=%s\n' "$url"
       printf 'MODEL_MAIN=%s\n' "$model_main"
       printf 'MODEL_HAIKU=%s\n' "$model_haiku"
+      printf 'EFFORT=%s\n' "$effort"
     } > "$CONFIG_FILE"
   )
   chmod 600 "$CONFIG_FILE"
@@ -219,6 +223,8 @@ print_help() {
   say "  $SELF config [KEY]           full setup, or just replace the key"
   say "  $SELF set-url [URL]          change the base URL"
   say "  $SELF set-model [MAIN] [HAIKU]  change the model name(s)"
+  say "  $SELF set-effort [LEVEL]     pin effort (low|medium|high|xhigh|max),"
+  say "                               or 'off' to let in-session /effort control it"
   say "  $SELF reset                  delete the stored config"
   say "  $SELF update                 self-update to the latest version"
 }
@@ -279,6 +285,27 @@ case "${1:-}" in
     [ -z "$NEW_HAIKU" ] && NEW_HAIKU="$NEW_MAIN"
     save_config "$(read_field KEY)" "$(read_field BASE_URL)" "$NEW_MAIN" "$NEW_HAIKU"
     say "Done."
+    exit 0
+    ;;
+  set-effort|--set-effort|change-effort|--change-effort|effort|--effort)
+    if [ ! -f "$CONFIG_FILE" ]; then
+      say "No config yet — run '$SELF config' first."
+      exit 1
+    fi
+    NEW_EFFORT="$(trim "${2:-}")"
+    # empty means "let in-session /effort control it" (don't force the env var)
+    [ -z "$NEW_EFFORT" ] && NEW_EFFORT="off"
+    NEW_EFFORT="$(printf '%s' "$NEW_EFFORT" | tr '[:upper:]' '[:lower:]')"
+    case "$NEW_EFFORT" in
+      low|medium|high|xhigh|max|off) : ;;
+      *) say "Effort must be: low, medium, high, xhigh, max, or off (off = /effort controls it)."; exit 1 ;;
+    esac
+    save_config "$(read_field KEY)" "$(read_field BASE_URL)" "$(read_field MODEL_MAIN)" "$(read_field MODEL_HAIKU)" "$NEW_EFFORT"
+    if [ "$NEW_EFFORT" = "off" ]; then
+      say "Done. Effort now controlled by /effort inside the session."
+    else
+      say "Done. Effort pinned to '$NEW_EFFORT'."
+    fi
     exit 0
     ;;
   reset|--reset)
@@ -356,6 +383,13 @@ export ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL_MAIN"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL_MAIN"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL_HAIKU"
 export CLAUDE_CODE_SUBAGENT_MODEL="$MODEL_HAIKU"
-export CLAUDE_CODE_EFFORT_LEVEL="max"
+
+# Only pin the effort level if the config asks for it. Setting this env var
+# would otherwise override — and disable — the in-session /effort command.
+EFFORT="$(read_field EFFORT)"
+case "$EFFORT" in
+  low|medium|high|xhigh|max) export CLAUDE_CODE_EFFORT_LEVEL="$EFFORT" ;;
+  *) : ;;  # unset/off/auto: leave it to /effort and settings.json
+esac
 
 exec claude --dangerously-skip-permissions "$@"

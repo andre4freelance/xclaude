@@ -105,11 +105,23 @@ The key is resolved in this order:
 <name>claude config <KEY>        # change just the stored key, no prompt
 <name>claude set-url <URL>       # change just the base URL
 <name>claude set-model <MAIN> [HAIKU]   # change the model name(s)
+<name>claude set-effort <LEVEL>  # pin effort, or 'off' to control it in-session
 <name>claude reset               # delete everything stored for this provider
 ```
 
 `change-key`/`change`/`set-key` are accepted as aliases for `config`;
-`change-url`/`url` for `set-url`; `change-model`/`model` for `set-model`.
+`change-url`/`url` for `set-url`; `change-model`/`model` for `set-model`;
+`change-effort`/`effort` for `set-effort`.
+
+### Effort level
+
+By default the wrapper does **not** set a fixed effort level, so the `/effort`
+command works normally inside the session and persists to your Claude Code
+settings. If you'd rather pin it (e.g. always max on a cheap model), run
+`<name>claude set-effort max` — valid levels are `low`, `medium`, `high`,
+`xhigh`, `max`. Pinning it exports `CLAUDE_CODE_EFFORT_LEVEL`, which **takes
+priority over — and disables — in-session `/effort`**; run
+`<name>claude set-effort off` to hand control back to `/effort`.
 
 ## Update
 
@@ -135,7 +147,7 @@ ANTHROPIC_DEFAULT_OPUS_MODEL="<the configured main model>"
 ANTHROPIC_DEFAULT_SONNET_MODEL="<the configured main model>"
 ANTHROPIC_DEFAULT_HAIKU_MODEL="<the configured haiku/cheap model>"
 CLAUDE_CODE_SUBAGENT_MODEL="<the configured haiku/cheap model>"
-CLAUDE_CODE_EFFORT_LEVEL="max"
+# CLAUDE_CODE_EFFORT_LEVEL is set ONLY if you pinned one via set-effort
 ```
 
 Then runs: `claude --dangerously-skip-permissions "$@"`
