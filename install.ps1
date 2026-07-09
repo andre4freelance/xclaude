@@ -5,7 +5,26 @@
 
 $ErrorActionPreference = 'Stop'
 
-$Repo = 'https://raw.githubusercontent.com/andre4freelance/xclaude/main'
+$Owner = 'andre4freelance'
+$RepoName = 'xclaude'
+$Branch = 'main'
+
+# Download a repo-relative path to $OutFile, trying several hosts because
+# raw.githubusercontent.com rate-limits (HTTP 429) hard on some networks.
+function Get-RepoFile([string]$Path, [string]$OutFile) {
+  $sources = @(
+    @{ Url = "https://raw.githubusercontent.com/$Owner/$RepoName/$Branch/$Path"; Headers = @{} },
+    @{ Url = "https://api.github.com/repos/$Owner/$RepoName/contents/$Path`?ref=$Branch"; Headers = @{ Accept = 'application/vnd.github.raw' } },
+    @{ Url = "https://cdn.jsdelivr.net/gh/$Owner/$RepoName@$Branch/$Path"; Headers = @{} }
+  )
+  foreach ($s in $sources) {
+    try {
+      Invoke-WebRequest -UseBasicParsing -Uri $s.Url -Headers $s.Headers -OutFile $OutFile
+      if ((Test-Path $OutFile) -and ((Get-Item $OutFile).Length -gt 0)) { return $true }
+    } catch { }
+  }
+  return $false
+}
 
 $Provider = $env:AICLAUDE_PROVIDER
 if (-not $Provider) {
@@ -27,7 +46,11 @@ $Dest = Join-Path $env:LOCALAPPDATA "Programs\$CmdName"
 New-Item -ItemType Directory -Force -Path $Dest | Out-Null
 
 Write-Host "Installing $CmdName to $Dest ..."
-Invoke-WebRequest -UseBasicParsing "$Repo/aiclaude.ps1" -OutFile (Join-Path $Dest "$CmdName.ps1")
+if (-not (Get-RepoFile 'aiclaude.ps1' (Join-Path $Dest "$CmdName.ps1"))) {
+  Write-Host 'Download failed from every mirror (raw.githubusercontent.com, GitHub API, jsDelivr).'
+  Write-Host 'Check your connection and try again in a minute.'
+  exit 1
+}
 
 # A .cmd shim so the command works from cmd.exe and PowerShell alike.
 $shim = @"

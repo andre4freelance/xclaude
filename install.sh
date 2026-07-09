@@ -9,10 +9,50 @@
 #
 set -euo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/andre4freelance/xclaude/main"
+OWNER="andre4freelance"
+REPO="xclaude"
+BRANCH="main"
 BIN_DIR="${DEEPCLAUDE_BIN_DIR:-$HOME/.local/bin}"
 
 say() { printf '%s\n' "$*" >&2; }
+
+# Pick a downloader.
+if command -v curl >/dev/null 2>&1; then
+  DL=curl
+elif command -v wget >/dev/null 2>&1; then
+  DL=wget
+else
+  say "Need curl or wget."
+  exit 1
+fi
+
+# Download $1 to file $2. $3=1 sends the GitHub API "raw" Accept header.
+_get() {
+  local url="$1" out="$2" raw="${3:-0}"
+  if [ "$DL" = curl ]; then
+    if [ "$raw" = 1 ]; then
+      curl -fsSL -H "Accept: application/vnd.github.raw" "$url" -o "$out" 2>/dev/null
+    else
+      curl -fsSL "$url" -o "$out" 2>/dev/null
+    fi
+  else
+    if [ "$raw" = 1 ]; then
+      wget -q --header="Accept: application/vnd.github.raw" -O "$out" "$url" 2>/dev/null
+    else
+      wget -qO "$out" "$url" 2>/dev/null
+    fi
+  fi
+}
+
+# Fetch a repo-relative path to file $2, trying several hosts because
+# raw.githubusercontent.com rate-limits (HTTP 429) hard on some networks.
+fetch() {
+  local path="$1" out="$2"
+  _get "https://raw.githubusercontent.com/$OWNER/$REPO/$BRANCH/$path" "$out" 0 && [ -s "$out" ] && return 0
+  _get "https://api.github.com/repos/$OWNER/$REPO/contents/$path?ref=$BRANCH" "$out" 1 && [ -s "$out" ] && return 0
+  _get "https://cdn.jsdelivr.net/gh/$OWNER/$REPO@$BRANCH/$path" "$out" 0 && [ -s "$out" ] && return 0
+  return 1
+}
 
 PROVIDER="${1:-${AICLAUDE_PROVIDER:-}}"
 
@@ -39,12 +79,9 @@ CMD_NAME="${PROVIDER}claude"
 mkdir -p "$BIN_DIR"
 
 say "Installing $CMD_NAME to $BIN_DIR ..."
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "$REPO_RAW/aiclaude" -o "$BIN_DIR/$CMD_NAME"
-elif command -v wget >/dev/null 2>&1; then
-  wget -qO "$BIN_DIR/$CMD_NAME" "$REPO_RAW/aiclaude"
-else
-  say "Need curl or wget."
+if ! fetch "aiclaude" "$BIN_DIR/$CMD_NAME"; then
+  say "Download failed from every mirror (raw.githubusercontent.com, GitHub API, jsDelivr)."
+  say "Check your connection and try again in a minute."
   exit 1
 fi
 chmod +x "$BIN_DIR/$CMD_NAME"

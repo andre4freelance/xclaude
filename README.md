@@ -31,7 +31,7 @@ never interfere with each other.
 ### macOS / Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/andre4freelance/xclaude/main/install.sh | bash
+curl -fsSL https://cdn.jsdelivr.net/gh/andre4freelance/xclaude@main/install.sh | bash
 ```
 
 Asks which provider you're setting up, then installs `<provider>claude` into
@@ -39,13 +39,20 @@ Asks which provider you're setting up, then installs `<provider>claude` into
 the line to add. To skip the prompt (e.g. in scripts):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/andre4freelance/xclaude/main/install.sh | bash -s -- glm
+curl -fsSL https://cdn.jsdelivr.net/gh/andre4freelance/xclaude@main/install.sh | bash -s -- glm
 ```
+
+> **Why jsDelivr and not `raw.githubusercontent.com`?** GitHub's raw host
+> rate-limits (HTTP 429) aggressively on some networks. jsDelivr is a CDN
+> that doesn't, so it's the reliable default. The `raw...` URL still works
+> when you aren't limited — and once installed, the wrapper's own downloads
+> (like `update`) automatically fall back across raw → GitHub API → jsDelivr,
+> so you never depend on a single host.
 
 ### Windows (PowerShell)
 
 ```powershell
-irm https://raw.githubusercontent.com/andre4freelance/xclaude/main/install.ps1 | iex
+irm https://cdn.jsdelivr.net/gh/andre4freelance/xclaude@main/install.ps1 | iex
 ```
 
 Installs `<provider>claude` into `%LOCALAPPDATA%\Programs\<provider>claude`

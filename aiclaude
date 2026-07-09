@@ -34,9 +34,21 @@ esac
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/${SELF}"
 CONFIG_FILE="$CONFIG_DIR/config"
 
-REPO_RAW="https://raw.githubusercontent.com/andre4freelance/xclaude/main"
+OWNER="andre4freelance"
+REPO="xclaude"
+BRANCH="main"
 
 say() { printf '%s\n' "$*" >&2; }
+
+# Fetch a repo-relative path to file $2, trying several hosts because
+# raw.githubusercontent.com rate-limits (HTTP 429) hard on some networks.
+fetch() {
+  local path="$1" out="$2"
+  curl -fsSL "https://raw.githubusercontent.com/$OWNER/$REPO/$BRANCH/$path" -o "$out" 2>/dev/null && [ -s "$out" ] && return 0
+  curl -fsSL -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/$OWNER/$REPO/contents/$path?ref=$BRANCH" -o "$out" 2>/dev/null && [ -s "$out" ] && return 0
+  curl -fsSL "https://cdn.jsdelivr.net/gh/$OWNER/$REPO@$BRANCH/$path" -o "$out" 2>/dev/null && [ -s "$out" ] && return 0
+  return 1
+}
 
 # Trim leading/trailing whitespace.
 trim() {
@@ -277,7 +289,11 @@ case "${1:-}" in
   update|--update|upgrade|--upgrade)
     say "Updating $SELF to the latest version..."
     TMP="$(mktemp "${SELF_PATH}.XXXXXX")"
-    curl -fsSL "$REPO_RAW/aiclaude" -o "$TMP"
+    if ! fetch "aiclaude" "$TMP"; then
+      rm -f "$TMP"
+      say "Download failed from every mirror. Try again in a minute."
+      exit 1
+    fi
     chmod +x "$TMP"
     mv "$TMP" "$SELF_PATH"
     say "Updated. Run '$SELF' to continue."

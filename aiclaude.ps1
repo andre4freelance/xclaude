@@ -23,7 +23,26 @@ $ProviderUpper = ($Provider.ToUpper() -replace '[^A-Z0-9]', '_')
 $ConfigDir  = Join-Path $env:APPDATA $Self
 $ConfigFile = Join-Path $ConfigDir 'config'
 
-$Repo = 'https://raw.githubusercontent.com/andre4freelance/xclaude/main'
+$Owner = 'andre4freelance'
+$RepoName = 'xclaude'
+$Branch = 'main'
+
+# Download a repo-relative path to $OutFile, trying several hosts because
+# raw.githubusercontent.com rate-limits (HTTP 429) hard on some networks.
+function Get-RepoFile([string]$Path, [string]$OutFile) {
+  $sources = @(
+    @{ Url = "https://raw.githubusercontent.com/$Owner/$RepoName/$Branch/$Path"; Headers = @{} },
+    @{ Url = "https://api.github.com/repos/$Owner/$RepoName/contents/$Path`?ref=$Branch"; Headers = @{ Accept = 'application/vnd.github.raw' } },
+    @{ Url = "https://cdn.jsdelivr.net/gh/$Owner/$RepoName@$Branch/$Path"; Headers = @{} }
+  )
+  foreach ($s in $sources) {
+    try {
+      Invoke-WebRequest -UseBasicParsing -Uri $s.Url -Headers $s.Headers -OutFile $OutFile
+      if ((Test-Path $OutFile) -and ((Get-Item $OutFile).Length -gt 0)) { return $true }
+    } catch { }
+  }
+  return $false
+}
 
 function Get-ProviderDefaults([string]$Name) {
   switch ($Name) {
@@ -198,7 +217,11 @@ if ($args.Count -ge 1) {
       Write-Host "Updating $Self to the latest version..."
       $target = $MyInvocation.MyCommand.Path
       $tmp = "$target.new"
-      Invoke-WebRequest -UseBasicParsing "$Repo/aiclaude.ps1" -OutFile $tmp
+      if (-not (Get-RepoFile 'aiclaude.ps1' $tmp)) {
+        if (Test-Path $tmp) { Remove-Item $tmp -Force }
+        Write-Host 'Download failed from every mirror. Try again in a minute.'
+        exit 1
+      }
       Move-Item -Force $tmp $target
       Write-Host "Updated. Run '$Self' to continue."
       exit 0
